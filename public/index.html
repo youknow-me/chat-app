@@ -1,0 +1,990 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Chatify</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet"/>
+<script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body, #root { height: 100%; overflow: hidden; }
+  body { font-family: 'DM Sans', sans-serif; background: #0b0b13; color: #e2e2ec; }
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #2a2a3e; border-radius: 99px; }
+  * { scrollbar-width: thin; scrollbar-color: #2a2a3e transparent; }
+  input, button, textarea { font-family: inherit; }
+  button { cursor: pointer; }
+  input:focus { outline: none; }
+
+  @keyframes fadeUp {
+    from { opacity: 0; transform: translateY(12px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes slideRight {
+    from { opacity: 0; transform: translateX(-10px); }
+    to   { opacity: 1; transform: translateX(0); }
+  }
+  @keyframes popIn {
+    from { opacity: 0; transform: scale(0.92); }
+    to   { opacity: 1; transform: scale(1); }
+  }
+  @keyframes toastIn {
+    from { opacity: 0; transform: translateX(20px); }
+    to   { opacity: 1; transform: translateX(0); }
+  }
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
+  @keyframes typingBounce {
+    0%, 80%, 100% { transform: translateY(0); opacity: 0.4; }
+    40%            { transform: translateY(-5px); opacity: 1; }
+  }
+  @keyframes msgIn {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  .user-item  { transition: background 0.15s, border-color 0.15s; }
+  .user-item:hover { background: rgba(108,84,228,0.1) !important; }
+  .send-btn:not(:disabled):hover { transform: scale(1.06); }
+  .send-btn { transition: transform 0.1s, background 0.2s, opacity 0.2s, box-shadow 0.2s; }
+  .tab-btn  { transition: background 0.2s, color 0.2s; }
+  .input-field:focus { border-color: #6c54e4 !important; box-shadow: 0 0 0 3px rgba(108,84,228,0.15) !important; }
+  .msg-bubble { animation: msgIn 0.2s ease both; }
+
+  .typing-dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: #9b8fe0; display: inline-block;
+    animation: typingBounce 1.3s infinite ease-in-out both;
+  }
+  .typing-dot:nth-child(2) { animation-delay: 0.15s; }
+  .typing-dot:nth-child(3) { animation-delay: 0.3s; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useRef, useCallback } = React;
+
+const API    = "/api";
+const SOCKET = "window.location.origin";
+
+/* ── REST helpers ────────────────────────────── */
+const req = async (method, path, body) => {
+  const r = await fetch(API + path, {
+    method,
+    credentials: "include",
+    headers: body ? { "Content-Type": "application/json" } : {},
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const d = await r.json();
+  if (!r.ok) throw new Error(d.message || "Something went wrong");
+  return d;
+};
+const get  = (p)    => req("GET",  p);
+const post = (p, b) => req("POST", p, b);
+const put  = (p, b) => req("PUT",  p, b);
+
+const toBase64 = (f) => new Promise((res, rej) => {
+  const r = new FileReader();
+  r.onload = () => res(r.result);
+  r.onerror = rej;
+  r.readAsDataURL(f);
+});
+
+const fmtTime = (ts) =>
+  new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
+const fmtDate = (ts) => {
+  const d = new Date(ts), now = new Date();
+  if (d.toDateString() === now.toDateString()) return "Today";
+  const y = new Date(now); y.setDate(now.getDate() - 1);
+  if (d.toDateString() === y.toDateString()) return "Yesterday";
+  return d.toLocaleDateString([], { month: "short", day: "numeric" });
+};
+
+const initials = (n = "") =>
+  n.split(" ").map(w => w[0]).join("").slice(0, 2).toUpperCase();
+
+/* ── Design tokens ───────────────────────────── */
+const C = {
+  bg: "#0b0b13", surface: "#11111c", surface2: "#17172a", surface3: "#1e1e30",
+  border: "#1e1e2e", accent: "#6c54e4", accentHover: "#7d67f0",
+  accentLight: "rgba(108,84,228,0.15)",
+  teal: "#00c9a7", tealLight: "rgba(0,201,167,0.12)",
+  text: "#e2e2ec", textSub: "#9090aa", textMuted: "#5a5a72",
+  danger: "#f04e6c", dangerLight: "rgba(240,78,108,0.12)",
+};
+
+const GRADIENTS = [
+  "linear-gradient(135deg,#6c54e4,#00c9a7)",
+  "linear-gradient(135deg,#e4548c,#f0a033)",
+  "linear-gradient(135deg,#3494e6,#6c54e4)",
+  "linear-gradient(135deg,#00c9a7,#3494e6)",
+];
+
+/* ── Avatar ──────────────────────────────────── */
+function Avatar({ src, name, size = 40, online, style: sx = {} }) {
+  const g = GRADIENTS[(name || "").charCodeAt(0) % GRADIENTS.length];
+  return (
+    <div style={{ position: "relative", display: "inline-flex", flexShrink: 0, ...sx }}>
+      <div style={{
+        width: size, height: size, borderRadius: "50%",
+        background: src ? "transparent" : g,
+        display: "flex", alignItems: "center", justifyContent: "center",
+        fontSize: size * 0.36, fontWeight: 600, color: "#fff",
+        overflow: "hidden", border: `2px solid ${C.border}`,
+      }}>
+        {src
+          ? <img src={src} alt={name} style={{ width: "100%", height: "100%", objectFit: "cover" }}/>
+          : initials(name)
+        }
+      </div>
+      {online !== undefined && (
+        <span style={{
+          position: "absolute", bottom: 1, right: 1,
+          width: size * 0.26, height: size * 0.26, borderRadius: "50%",
+          background: online ? C.teal : C.textMuted,
+          border: `2px solid ${C.surface}`,
+        }}/>
+      )}
+    </div>
+  );
+}
+
+/* ── Toast ───────────────────────────────────── */
+function ToastContainer({ toasts }) {
+  const cols = { success: C.teal, error: C.danger, info: C.accent };
+  return (
+    <div style={{
+      position: "fixed", top: 20, right: 20, zIndex: 9999,
+      display: "flex", flexDirection: "column", gap: 10, pointerEvents: "none",
+    }}>
+      {toasts.map(t => (
+        <div key={t.id} style={{
+          background: C.surface2,
+          border: `1px solid ${cols[t.type] || C.border}`,
+          borderLeft: `4px solid ${cols[t.type] || C.accent}`,
+          borderRadius: 12, padding: "12px 16px",
+          color: C.text, fontSize: 14, fontWeight: 500,
+          minWidth: 220, maxWidth: 340,
+          boxShadow: "0 8px 32px rgba(0,0,0,0.45)",
+          animation: "toastIn 0.3s ease both",
+          display: "flex", alignItems: "center", gap: 10,
+        }}>
+          <span>{t.type === "success" ? "✓" : t.type === "error" ? "✕" : "ℹ"}</span>
+          {t.msg}
+        </div>
+      ))}
+    </div>
+  );
+}
+function useToast() {
+  const [toasts, setToasts] = useState([]);
+  const show = useCallback((msg, type = "info") => {
+    const id = Date.now() + Math.random();
+    setToasts(t => [...t, { id, msg, type }]);
+    setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 3800);
+  }, []);
+  return { toasts, show };
+}
+
+/* ── Spinner ─────────────────────────────────── */
+function Spinner({ size = 18, color = C.accent }) {
+  return (
+    <div style={{
+      width: size, height: size, borderRadius: "50%",
+      border: `2px solid ${color}30`, borderTopColor: color,
+      animation: "spin 0.7s linear infinite",
+    }}/>
+  );
+}
+
+/* ── Auth screen ─────────────────────────────── */
+function AuthScreen({ onAuth, toast }) {
+  const [mode,    setMode]    = useState("login");
+  const [form,    setForm]    = useState({ fullName: "", email: "", password: "" });
+  const [loading, setLoading] = useState(false);
+  const [showPw,  setShowPw]  = useState(false);
+  const set = k => e => setForm(f => ({ ...f, [k]: e.target.value }));
+
+  const submit = async () => {
+    if (loading) return;
+    const { fullName, email, password } = form;
+    if (mode === "signup" && !fullName.trim()) return toast.show("Full name is required", "error");
+    if (!email.trim())  return toast.show("Email is required", "error");
+    if (!password)      return toast.show("Password is required", "error");
+    if (mode === "signup" && password.length < 6)
+      return toast.show("Password must be at least 6 characters", "error");
+    setLoading(true);
+    try {
+      const body = mode === "login"
+        ? { email, password }
+        : { fullName, email, password };
+      const user = await post(mode === "login" ? "/auth/login" : "/auth/signup", body);
+      toast.show(`Welcome${mode === "signup" ? ", " + user.fullName : " back"}!`, "success");
+      onAuth(user);
+    } catch (err) {
+      toast.show(err.message, "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const inp = (label, key, type = "text", placeholder = "") => (
+    <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+      <label style={{ fontSize: 13, fontWeight: 500, color: C.textSub }}>{label}</label>
+      <div style={{ position: "relative" }}>
+        <input
+          className="input-field"
+          type={type === "password" ? (showPw ? "text" : "password") : type}
+          placeholder={placeholder}
+          value={form[key]}
+          onChange={set(key)}
+          onKeyDown={e => e.key === "Enter" && submit()}
+          style={{
+            width: "100%", padding: "11px 14px",
+            paddingRight: type === "password" ? 44 : 14,
+            borderRadius: 10, background: C.surface3,
+            border: `1px solid ${C.border}`,
+            color: C.text, fontSize: 14.5,
+            transition: "border-color 0.2s, box-shadow 0.2s",
+          }}
+        />
+        {type === "password" && (
+          <button onClick={() => setShowPw(s => !s)} style={{
+            position: "absolute", right: 12, top: "50%",
+            transform: "translateY(-50%)",
+            background: "none", border: "none",
+            color: C.textMuted, fontSize: 15,
+          }}>{showPw ? "🙈" : "👁"}</button>
+        )}
+      </div>
+    </div>
+  );
+
+  return (
+    <div style={{
+      minHeight: "100vh", background: C.bg,
+      display: "flex", alignItems: "center", justifyContent: "center",
+      backgroundImage:
+        "radial-gradient(ellipse 60% 50% at 15% 60%, rgba(108,84,228,0.13) 0%, transparent 100%)," +
+        "radial-gradient(ellipse 50% 40% at 85% 25%, rgba(0,201,167,0.08) 0%, transparent 100%)",
+    }}>
+      <div style={{
+        width: "100%", maxWidth: 420, padding: 36,
+        background: C.surface, borderRadius: 22,
+        border: `1px solid ${C.border}`,
+        boxShadow: "0 32px 80px rgba(0,0,0,0.55)",
+        animation: "fadeUp 0.35s ease both",
+      }}>
+        <div style={{ textAlign: "center", marginBottom: 28 }}>
+          <div style={{
+            width: 54, height: 54, borderRadius: 16, margin: "0 auto 14px",
+            background: "linear-gradient(135deg,#6c54e4,#00c9a7)",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            fontSize: 24, boxShadow: "0 8px 24px rgba(108,84,228,0.4)",
+          }}>💬</div>
+          <h1 style={{ color: C.text, fontSize: 26, fontWeight: 700, letterSpacing: "-0.5px" }}>
+            Chatify
+          </h1>
+          <p style={{ color: C.textMuted, fontSize: 13.5, marginTop: 5 }}>
+            {mode === "login" ? "Sign in to continue your conversations" : "Create an account to get started"}
+          </p>
+        </div>
+
+        <div style={{
+          display: "flex", background: C.surface3,
+          borderRadius: 12, padding: 4, marginBottom: 24, gap: 4,
+        }}>
+          {["login","signup"].map(m => (
+            <button key={m} className="tab-btn" onClick={() => setMode(m)} style={{
+              flex: 1, padding: "9px 0", borderRadius: 9, border: "none",
+              background: mode === m ? C.accent : "transparent",
+              color: mode === m ? "#fff" : C.textMuted,
+              fontSize: 13.5, fontWeight: 600,
+              boxShadow: mode === m ? "0 4px 16px rgba(108,84,228,0.35)" : "none",
+            }}>
+              {m === "login" ? "Sign In" : "Create Account"}
+            </button>
+          ))}
+        </div>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          {mode === "signup" && inp("Full Name", "fullName", "text", "Jane Doe")}
+          {inp("Email address", "email", "email", "you@example.com")}
+          {inp("Password", "password", "password", "At least 6 characters")}
+        </div>
+
+        <button onClick={submit} disabled={loading} style={{
+          width: "100%", padding: "13px 0", marginTop: 22,
+          borderRadius: 12, border: "none",
+          background: loading ? C.surface3 : "linear-gradient(135deg,#6c54e4,#8b6ff0)",
+          color: loading ? C.textMuted : "#fff",
+          fontSize: 15, fontWeight: 600,
+          cursor: loading ? "not-allowed" : "pointer",
+          display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+          boxShadow: loading ? "none" : "0 6px 22px rgba(108,84,228,0.38)",
+          transition: "box-shadow 0.2s, background 0.2s",
+        }}>
+          {loading ? <><Spinner size={16} color="#fff"/> Please wait…</> :
+            mode === "login" ? "Sign In →" : "Create Account →"
+          }
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ── Sidebar ─────────────────────────────────── */
+function Sidebar({ users, selectedUser, onSelect, authUser, onProfile, onlineUsers }) {
+  const [q, setQ] = useState("");
+  const filtered = users.filter(u =>
+    u.fullName.toLowerCase().includes(q.toLowerCase()) ||
+    u.email.toLowerCase().includes(q.toLowerCase())
+  );
+
+  return (
+    <div style={{
+      width: 300, display: "flex", flexDirection: "column",
+      background: C.surface, borderRight: `1px solid ${C.border}`, flexShrink: 0,
+    }}>
+      {/* header */}
+      <div style={{ padding: "18px 18px 14px", borderBottom: `1px solid ${C.border}` }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+            <div style={{
+              width: 30, height: 30, borderRadius: 9,
+              background: "linear-gradient(135deg,#6c54e4,#00c9a7)",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              fontSize: 15, boxShadow: "0 4px 12px rgba(108,84,228,0.35)",
+            }}>💬</div>
+            <span style={{ color: C.text, fontSize: 17, fontWeight: 700, letterSpacing: "-0.4px" }}>
+              Chatify
+            </span>
+          </div>
+          <button onClick={onProfile} title="Settings" style={{
+            background: C.surface3, border: `1px solid ${C.border}`,
+            borderRadius: 9, padding: "6px 9px", color: C.textSub, fontSize: 15,
+          }}>⚙️</button>
+        </div>
+        <div style={{ position: "relative" }}>
+          <span style={{
+            position: "absolute", left: 11, top: "50%",
+            transform: "translateY(-50%)", fontSize: 14, opacity: 0.45,
+          }}>🔍</span>
+          <input
+            className="input-field"
+            value={q}
+            onChange={e => setQ(e.target.value)}
+            placeholder="Search users…"
+            style={{
+              width: "100%", padding: "8px 11px 8px 33px",
+              borderRadius: 9, background: C.surface3,
+              border: `1px solid ${C.border}`,
+              color: C.text, fontSize: 13,
+              transition: "border-color 0.2s, box-shadow 0.2s",
+            }}
+          />
+        </div>
+      </div>
+
+      {/* online count */}
+      <div style={{ padding: "8px 18px 4px", display: "flex", alignItems: "center", gap: 6 }}>
+        <span style={{ width: 7, height: 7, borderRadius: "50%", background: C.teal, display: "inline-block" }}/>
+        <span style={{ fontSize: 11, fontWeight: 600, color: C.textMuted, textTransform: "uppercase", letterSpacing: "0.9px" }}>
+          {onlineUsers.length} online · {users.length} total
+        </span>
+      </div>
+
+      {/* list */}
+      <div style={{ flex: 1, overflowY: "auto" }}>
+        {filtered.length === 0
+          ? <p style={{ padding: 20, color: C.textMuted, fontSize: 13, textAlign: "center" }}>No users found</p>
+          : filtered.map((u, i) => {
+              const selected = selectedUser?._id === u._id;
+              const isOnline  = onlineUsers.includes(u._id);
+              return (
+                <button key={u._id} className="user-item" onClick={() => onSelect(u)} style={{
+                  width: "100%", padding: "11px 18px",
+                  display: "flex", alignItems: "center", gap: 12,
+                  background: selected ? C.accentLight : "transparent",
+                  border: "none",
+                  borderLeft: `3px solid ${selected ? C.accent : "transparent"}`,
+                  textAlign: "left",
+                  animation: `slideRight 0.25s ease ${i * 0.04}s both`,
+                }}>
+                  <Avatar src={u.profilePic} name={u.fullName} size={42} online={isOnline}/>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{
+                      color: C.text, fontSize: 14, fontWeight: 600,
+                      overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                    }}>{u.fullName}</div>
+                    <div style={{
+                      color: isOnline ? C.teal : C.textMuted,
+                      fontSize: 12, fontWeight: isOnline ? 500 : 400,
+                    }}>
+                      {isOnline ? "● Online" : u.email}
+                    </div>
+                  </div>
+                </button>
+              );
+            })
+        }
+      </div>
+
+      {/* self */}
+      <div style={{
+        padding: "12px 18px", borderTop: `1px solid ${C.border}`,
+        display: "flex", alignItems: "center", gap: 11,
+      }}>
+        <Avatar src={authUser?.profilePic} name={authUser?.fullName} size={38} online={true}/>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ color: C.text, fontSize: 13.5, fontWeight: 600 }}>{authUser?.fullName}</div>
+          <div style={{ color: C.teal, fontSize: 11, display: "flex", alignItems: "center", gap: 4 }}>
+            <span style={{ width: 6, height: 6, borderRadius: "50%", background: C.teal, display: "inline-block" }}/> Online
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── Typing indicator ────────────────────────── */
+function TypingIndicator({ name }) {
+  return (
+    <div style={{ display: "flex", alignItems: "flex-end", gap: 8, marginBottom: 4 }}>
+      <div style={{ width: 30 }}/>
+      <div style={{
+        padding: "10px 14px", borderRadius: "16px 16px 16px 4px",
+        background: C.surface3,
+        display: "flex", alignItems: "center", gap: 5,
+      }}>
+        <span className="typing-dot"/>
+        <span className="typing-dot"/>
+        <span className="typing-dot"/>
+      </div>
+      <span style={{ fontSize: 11, color: C.textMuted, marginBottom: 4 }}>
+        {name} is typing…
+      </span>
+    </div>
+  );
+}
+
+/* ── Empty state ─────────────────────────────── */
+function EmptyState() {
+  return (
+    <div style={{
+      flex: 1, display: "flex", flexDirection: "column",
+      alignItems: "center", justifyContent: "center", background: C.bg, gap: 14,
+      backgroundImage: "radial-gradient(ellipse 60% 50% at 70% 50%, rgba(108,84,228,0.07) 0%, transparent 100%)",
+    }}>
+      <div style={{
+        width: 72, height: 72, borderRadius: 20,
+        background: C.surface2, border: `1px solid ${C.border}`,
+        display: "flex", alignItems: "center", justifyContent: "center", fontSize: 30,
+      }}>💬</div>
+      <div style={{ textAlign: "center" }}>
+        <h2 style={{ color: C.text, fontSize: 20, fontWeight: 700, marginBottom: 6 }}>Your messages</h2>
+        <p style={{ color: C.textMuted, fontSize: 14, lineHeight: 1.6, maxWidth: 250 }}>
+          Select someone from the sidebar to start a conversation
+        </p>
+      </div>
+    </div>
+  );
+}
+
+/* ── Message bubble ──────────────────────────── */
+function Bubble({ msg, isMine, showAvatar, peer }) {
+  return (
+    <div className="msg-bubble" style={{
+      display: "flex",
+      flexDirection: isMine ? "row-reverse" : "row",
+      alignItems: "flex-end", gap: 8, marginBottom: 3,
+    }}>
+      <div style={{ width: 30, flexShrink: 0 }}>
+        {!isMine && showAvatar && <Avatar src={peer?.profilePic} name={peer?.fullName} size={30}/>}
+      </div>
+      <div style={{
+        maxWidth: "62%", display: "flex", flexDirection: "column",
+        alignItems: isMine ? "flex-end" : "flex-start",
+      }}>
+        {msg.image && (
+          <img src={msg.image} alt="attachment" style={{
+            maxWidth: "100%", borderRadius: 14,
+            marginBottom: msg.text ? 5 : 0,
+            border: `1px solid ${C.border}`, cursor: "pointer",
+          }} onClick={() => window.open(msg.image, "_blank")}/>
+        )}
+        {msg.text && (
+          <div style={{
+            padding: "10px 14px",
+            borderRadius: isMine ? "16px 16px 4px 16px" : "16px 16px 16px 4px",
+            background: isMine ? "linear-gradient(135deg,#6c54e4,#8b6ff0)" : C.surface3,
+            color: isMine ? "#fff" : C.text,
+            fontSize: 14, lineHeight: 1.55, wordBreak: "break-word",
+            boxShadow: isMine ? "0 4px 16px rgba(108,84,228,0.25)" : "none",
+          }}>{msg.text}</div>
+        )}
+        {msg._optimistic
+          ? <span style={{ fontSize: 11, color: C.textMuted, marginTop: 3 }}>Sending…</span>
+          : <span style={{ fontSize: 11, color: C.textMuted, marginTop: 3 }}>
+              {fmtTime(msg.createdAt)}{isMine && <span style={{ marginLeft: 4 }}>✓</span>}
+            </span>
+        }
+      </div>
+    </div>
+  );
+}
+
+/* ── Date divider ────────────────────────────── */
+function DateDivider({ label }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 12, margin: "14px 0 10px" }}>
+      <div style={{ flex: 1, height: 1, background: C.border }}/>
+      <span style={{
+        fontSize: 11, color: C.textMuted, fontWeight: 500,
+        background: C.bg, padding: "2px 10px",
+        borderRadius: 99, border: `1px solid ${C.border}`,
+      }}>{label}</span>
+      <div style={{ flex: 1, height: 1, background: C.border }}/>
+    </div>
+  );
+}
+
+/* ── Chat window ─────────────────────────────── */
+function ChatWindow({ peer, authUser, socket, onlineUsers, toast }) {
+  const [msgs,     setMsgs]    = useState([]);
+  const [loading,  setLoading] = useState(true);
+  const [text,     setText]    = useState("");
+  const [imgData,  setImgData] = useState(null);
+  const [imgPrev,  setImgPrev] = useState(null);
+  const [sending,  setSending] = useState(false);
+  const [peerTyping, setPeerTyping] = useState(false);
+  const bottomRef  = useRef();
+  const fileRef    = useRef();
+  const inputRef   = useRef();
+  const typingTimer = useRef(null);
+
+  const isOnline = onlineUsers.includes(peer._id);
+
+  /* load messages */
+  useEffect(() => {
+    setMsgs([]); setLoading(true); setText(""); setImgData(null); setImgPrev(null); setPeerTyping(false);
+    get(`/message/${peer._id}`)
+      .then(setMsgs)
+      .catch(() => toast.show("Couldn't load messages", "error"))
+      .finally(() => setLoading(false));
+  }, [peer._id]);
+
+  /* socket listeners */
+  useEffect(() => {
+    if (!socket) return;
+
+    const handleNewMessage = (msg) => {
+      if (msg.senderId !== peer._id) return; // not from this chat
+      setMsgs(m => [...m, msg]);
+      setPeerTyping(false);
+    };
+
+    const handleTyping = ({ from }) => {
+      if (from !== peer._id) return;
+      setPeerTyping(true);
+    };
+
+    const handleStopTyping = ({ from }) => {
+      if (from !== peer._id) return;
+      setPeerTyping(false);
+    };
+
+    socket.on("newMessage",  handleNewMessage);
+    socket.on("typing",      handleTyping);
+    socket.on("stopTyping",  handleStopTyping);
+
+    return () => {
+      socket.off("newMessage",  handleNewMessage);
+      socket.off("typing",      handleTyping);
+      socket.off("stopTyping",  handleStopTyping);
+    };
+  }, [socket, peer._id]);
+
+  /* scroll to bottom */
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [msgs, peerTyping]);
+
+  const clearImage = () => { setImgData(null); setImgPrev(null); };
+
+  const handleTextChange = (e) => {
+    setText(e.target.value);
+    if (!socket) return;
+    socket.emit("typing", { to: peer._id });
+    clearTimeout(typingTimer.current);
+    typingTimer.current = setTimeout(() => {
+      socket.emit("stopTyping", { to: peer._id });
+    }, 1500);
+  };
+
+  const send = async () => {
+    if ((!text.trim() && !imgData) || sending) return;
+    if (socket) socket.emit("stopTyping", { to: peer._id });
+    clearTimeout(typingTimer.current);
+    setSending(true);
+    const body = {};
+    if (text.trim()) body.text = text.trim();
+    if (imgData)     body.image = imgData;
+    const opt = {
+      _id: `opt-${Date.now()}`, _optimistic: true,
+      senderId: authUser._id, receiverId: peer._id,
+      text: body.text || null, image: imgPrev || null,
+      createdAt: new Date().toISOString(),
+    };
+    setMsgs(m => [...m, opt]);
+    setText(""); clearImage();
+    try {
+      const saved = await post(`/message/send/${peer._id}`, body);
+      setMsgs(m => m.map(x => x._id === opt._id ? saved : x));
+    } catch (err) {
+      toast.show("Failed to send", "error");
+      setMsgs(m => m.filter(x => x._id !== opt._id));
+    } finally {
+      setSending(false);
+      inputRef.current?.focus();
+    }
+  };
+
+  const selectImage = async (e) => {
+    const f = e.target.files[0];
+    if (!f) return;
+    if (f.size > 5 * 1024 * 1024) { toast.show("Image must be under 5 MB", "error"); return; }
+    const b64 = await toBase64(f);
+    setImgData(b64); setImgPrev(b64);
+    e.target.value = "";
+  };
+
+  /* group by date */
+  const grouped = [];
+  let lastDate = null;
+  msgs.forEach(msg => {
+    const lbl = fmtDate(msg.createdAt);
+    if (lbl !== lastDate) { grouped.push({ type: "date", label: lbl }); lastDate = lbl; }
+    grouped.push({ type: "msg", msg });
+  });
+
+  const canSend = (text.trim() || imgData) && !sending;
+
+  return (
+    <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", background: C.bg }}>
+      {/* header */}
+      <div style={{
+        padding: "14px 22px", background: C.surface,
+        borderBottom: `1px solid ${C.border}`,
+        display: "flex", alignItems: "center", gap: 14, flexShrink: 0,
+      }}>
+        <Avatar src={peer.profilePic} name={peer.fullName} size={42} online={isOnline}/>
+        <div style={{ flex: 1 }}>
+          <div style={{ color: C.text, fontSize: 15.5, fontWeight: 700 }}>{peer.fullName}</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 5, marginTop: 2 }}>
+            {peerTyping ? (
+              <span style={{ color: C.accent, fontSize: 12, fontStyle: "italic" }}>typing…</span>
+            ) : isOnline ? (
+              <><span style={{ width: 7, height: 7, borderRadius: "50%", background: C.teal, display: "inline-block" }}/><span style={{ color: C.teal, fontSize: 12 }}>Online</span></>
+            ) : (
+              <span style={{ color: C.textMuted, fontSize: 12 }}>Offline</span>
+            )}
+          </div>
+        </div>
+        {[["📞","Voice call"],["📹","Video call"]].map(([ico, lbl]) => (
+          <button key={lbl} title={lbl} style={{
+            background: C.surface3, border: `1px solid ${C.border}`,
+            borderRadius: 9, padding: "7px 10px", fontSize: 15, color: C.textSub,
+          }}>{ico}</button>
+        ))}
+      </div>
+
+      {/* messages */}
+      <div style={{ flex: 1, overflowY: "auto", padding: "16px 22px" }}>
+        {loading
+          ? <div style={{ display: "flex", justifyContent: "center", paddingTop: 48 }}><Spinner size={24}/></div>
+          : msgs.length === 0
+            ? <p style={{ textAlign: "center", color: C.textMuted, fontSize: 14, marginTop: 48 }}>
+                No messages yet. Say hi! 👋
+              </p>
+            : grouped.map((item, i) =>
+                item.type === "date"
+                  ? <DateDivider key={`d-${i}`} label={item.label}/>
+                  : (() => {
+                      const isMine = item.msg.senderId === authUser._id;
+                      const prev   = grouped[i - 1];
+                      const showAvatar = !isMine && (!prev || prev.type === "date" || prev.msg?.senderId !== item.msg.senderId);
+                      return <Bubble key={item.msg._id} msg={item.msg} isMine={isMine} showAvatar={showAvatar} peer={peer}/>;
+                    })()
+              )
+        }
+        {/* typing indicator shown at bottom of messages */}
+        {peerTyping && <TypingIndicator name={peer.fullName}/>}
+        <div ref={bottomRef}/>
+      </div>
+
+      {/* image preview */}
+      {imgPrev && (
+        <div style={{
+          padding: "8px 22px", background: C.surface,
+          borderTop: `1px solid ${C.border}`,
+          display: "flex", alignItems: "center", gap: 12,
+        }}>
+          <div style={{ position: "relative" }}>
+            <img src={imgPrev} alt="preview" style={{ height: 64, borderRadius: 10, border: `1px solid ${C.border}` }}/>
+            <button onClick={clearImage} style={{
+              position: "absolute", top: -6, right: -6,
+              background: C.danger, border: "none", borderRadius: "50%",
+              width: 18, height: 18, color: "#fff", fontSize: 10,
+              display: "flex", alignItems: "center", justifyContent: "center",
+            }}>✕</button>
+          </div>
+          <span style={{ color: C.textSub, fontSize: 12 }}>Image ready to send</span>
+        </div>
+      )}
+
+      {/* input */}
+      <div style={{
+        padding: "14px 22px", background: C.surface,
+        borderTop: `1px solid ${C.border}`,
+        display: "flex", alignItems: "center", gap: 10, flexShrink: 0,
+      }}>
+        <input type="file" ref={fileRef} accept="image/*" onChange={selectImage} style={{ display: "none" }}/>
+        <button onClick={() => fileRef.current.click()} title="Attach image" style={{
+          background: C.surface3, border: `1px solid ${C.border}`,
+          borderRadius: 11, padding: "10px 13px", fontSize: 17, color: C.textSub, flexShrink: 0,
+        }}>📎</button>
+        <input
+          ref={inputRef}
+          className="input-field"
+          value={text}
+          onChange={handleTextChange}
+          onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
+          placeholder={`Message ${peer.fullName}…`}
+          style={{
+            flex: 1, padding: "11px 16px", borderRadius: 12,
+            background: C.surface3, border: `1px solid ${C.border}`,
+            color: C.text, fontSize: 14,
+            transition: "border-color 0.2s, box-shadow 0.2s",
+          }}
+        />
+        <button
+          className="send-btn"
+          onClick={send}
+          disabled={!canSend}
+          style={{
+            background: canSend ? "linear-gradient(135deg,#6c54e4,#8b6ff0)" : C.surface3,
+            border: "none", borderRadius: 12, padding: "10px 18px",
+            color: canSend ? "#fff" : C.textMuted, fontSize: 17, flexShrink: 0,
+            boxShadow: canSend ? "0 4px 16px rgba(108,84,228,0.35)" : "none",
+            opacity: canSend ? 1 : 0.6,
+          }}
+        >
+          {sending ? <Spinner size={16} color="#fff"/> : "➤"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ── Profile modal ───────────────────────────── */
+function ProfileModal({ authUser, onClose, onRefresh, onLogout, toast }) {
+  const [uploading, setUploading] = useState(false);
+  const fileRef = useRef();
+
+  const handleAvatar = async (e) => {
+    const f = e.target.files[0];
+    if (!f) return;
+    if (f.size > 5 * 1024 * 1024) { toast.show("Image must be under 5 MB", "error"); return; }
+    setUploading(true);
+    try {
+      const b64 = await toBase64(f);
+      await put("/auth/update-profile", { profilePic: b64 });
+      toast.show("Profile picture updated!", "success");
+      await onRefresh();
+    } catch (err) {
+      toast.show(err.message, "error");
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  return (
+    <div onClick={onClose} style={{
+      position: "fixed", inset: 0, background: "rgba(0,0,0,0.65)",
+      display: "flex", alignItems: "center", justifyContent: "center",
+      zIndex: 500, backdropFilter: "blur(6px)",
+    }}>
+      <div onClick={e => e.stopPropagation()} style={{
+        background: C.surface, borderRadius: 22, padding: 34, width: 360,
+        border: `1px solid ${C.border}`,
+        boxShadow: "0 32px 80px rgba(0,0,0,0.6)",
+        animation: "popIn 0.2s ease both",
+      }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 26 }}>
+          <h2 style={{ color: C.text, fontSize: 19, fontWeight: 700 }}>Profile</h2>
+          <button onClick={onClose} style={{
+            background: C.surface3, border: `1px solid ${C.border}`,
+            borderRadius: 9, padding: "5px 10px", color: C.textSub, fontSize: 15,
+          }}>✕</button>
+        </div>
+
+        <div style={{ textAlign: "center", marginBottom: 24 }}>
+          <div style={{ position: "relative", display: "inline-block" }}>
+            <Avatar src={authUser?.profilePic} name={authUser?.fullName} size={90} online/>
+            <button onClick={() => fileRef.current.click()} style={{
+              position: "absolute", bottom: 0, right: 0,
+              background: C.accent, border: "none", borderRadius: "50%",
+              width: 28, height: 28, fontSize: 14,
+              display: "flex", alignItems: "center", justifyContent: "center",
+              boxShadow: "0 2px 8px rgba(108,84,228,0.45)",
+            }}>{uploading ? "⏳" : "📷"}</button>
+          </div>
+          <input type="file" ref={fileRef} accept="image/*" onChange={handleAvatar} style={{ display: "none" }}/>
+        </div>
+
+        <div style={{ background: C.surface3, borderRadius: 14, padding: 18, marginBottom: 18 }}>
+          {[["Full Name", authUser?.fullName], ["Email", authUser?.email]].map(([lbl, val]) => (
+            <div key={lbl} style={{ marginBottom: 12 }}>
+              <div style={{ fontSize: 11, color: C.textMuted, textTransform: "uppercase", letterSpacing: "0.6px", marginBottom: 4 }}>{lbl}</div>
+              <div style={{ color: C.text, fontSize: 14.5, fontWeight: 500 }}>{val}</div>
+            </div>
+          ))}
+        </div>
+
+        <div style={{
+          background: C.tealLight, borderRadius: 10, padding: "9px 14px",
+          marginBottom: 22, display: "flex", alignItems: "center", gap: 8,
+          border: "1px solid rgba(0,201,167,0.2)",
+        }}>
+          <span style={{ width: 8, height: 8, borderRadius: "50%", background: C.teal, display: "block" }}/>
+          <span style={{ color: C.teal, fontSize: 13, fontWeight: 600 }}>Currently Online</span>
+        </div>
+
+        <button onClick={onLogout} style={{
+          width: "100%", padding: "12px 0", borderRadius: 12, border: "none",
+          background: C.dangerLight, color: C.danger,
+          fontSize: 14.5, fontWeight: 600,
+          border: "1px solid rgba(240,78,108,0.2)",
+        }}>Sign Out</button>
+      </div>
+    </div>
+  );
+}
+
+/* ── App root ────────────────────────────────── */
+function App() {
+  const toast = useToast();
+  const [authUser,     setAuthUser]     = useState(null);
+  const [checking,     setChecking]     = useState(true);
+  const [users,        setUsers]        = useState([]);
+  const [peer,         setPeer]         = useState(null);
+  const [showProfile,  setShowProfile]  = useState(false);
+  const [onlineUsers,  setOnlineUsers]  = useState([]);
+  const socketRef = useRef(null);
+
+  /* restore session */
+  useEffect(() => {
+    get("/auth/check")
+      .then(u => setAuthUser(u))
+      .catch(() => {})
+      .finally(() => setChecking(false));
+  }, []);
+
+  /* connect / disconnect socket */
+  useEffect(() => {
+    if (!authUser) {
+      if (socketRef.current) { socketRef.current.disconnect(); socketRef.current = null; }
+      return;
+    }
+    const socket = io(SOCKET, {
+      query: { userId: authUser._id },
+      withCredentials: true,
+    });
+    socketRef.current = socket;
+    socket.on("getOnlineUsers", (ids) => setOnlineUsers(ids));
+    return () => { socket.disconnect(); socketRef.current = null; };
+  }, [authUser?._id]);
+
+  /* load sidebar */
+  useEffect(() => {
+    if (!authUser) return;
+    get("/message/user")
+      .then(setUsers)
+      .catch(() => toast.show("Could not load users", "error"));
+  }, [authUser]);
+
+  const refreshUser = async () => {
+    const u = await get("/auth/check");
+    setAuthUser(u);
+  };
+
+  const logout = async () => {
+    try { await post("/auth/logout", {}); } catch (_) {}
+    setAuthUser(null); setPeer(null); setUsers([]); setOnlineUsers([]);
+    setShowProfile(false);
+  };
+
+  if (checking) return (
+    <div style={{ height: "100vh", background: C.bg, display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <Spinner size={28}/>
+    </div>
+  );
+
+  if (!authUser) return (
+    <>
+      <ToastContainer toasts={toast.toasts}/>
+      <AuthScreen onAuth={setAuthUser} toast={toast}/>
+    </>
+  );
+
+  return (
+    <>
+      <ToastContainer toasts={toast.toasts}/>
+      <div style={{ height: "100vh", display: "flex", overflow: "hidden" }}>
+        <Sidebar
+          users={users}
+          selectedUser={peer}
+          onSelect={setPeer}
+          authUser={authUser}
+          onProfile={() => setShowProfile(true)}
+          onlineUsers={onlineUsers}
+        />
+        {peer
+          ? <ChatWindow
+              key={peer._id}
+              peer={peer}
+              authUser={authUser}
+              socket={socketRef.current}
+              onlineUsers={onlineUsers}
+              toast={toast}
+            />
+          : <EmptyState/>
+        }
+      </div>
+      {showProfile && (
+        <ProfileModal
+          authUser={authUser}
+          onClose={() => setShowProfile(false)}
+          onRefresh={refreshUser}
+          onLogout={logout}
+          toast={toast}
+        />
+      )}
+    </>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
